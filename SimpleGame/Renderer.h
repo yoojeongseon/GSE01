@@ -14,6 +14,12 @@ struct Color {
 // Batched, painter-ordered geometry in a 1280 x 800 logical canvas.
 class Renderer {
 public:
+    struct PostProcessSettings {
+        bool enabled = true, bloom = true, vignette = true, edgeBlur = true;
+        float exposure = 1.05f;
+        float bloomStrength = .45f, bloomThreshold = 1.f;
+        float vignetteStrength = .38f, edgeBlurStrength = .85f;
+    };
     Renderer(int width, int height);
     ~Renderer();
     Renderer(const Renderer&) = delete;
@@ -21,7 +27,12 @@ public:
     bool IsInitialized() const;
     void Resize(int width, int height);
     void Begin();
+    // Resolve the HDR scene before submitting screen-space UI geometry.
+    void BeginInterface();
     void End();
+    PostProcessSettings& Effects() { return effects_; }
+    const PostProcessSettings& Effects() const { return effects_; }
+    bool PostProcessingAvailable() const { return postReady_; }
     void Triangle(Point a, Point b, Point c, Color color);
     void Quad(Point a, Point b, Point c, Point d, Color color);
     void Rect(float x, float y, float w, float h, Color color);
@@ -36,4 +47,23 @@ private:
     GLuint program_ = 0, vao_ = 0, buffer_ = 0;
     int width_ = 1280, height_ = 800;
     std::vector<Vertex> vertices_;
+    struct Target { GLuint framebuffer = 0, texture = 0; int width = 0, height = 0; };
+    Target scene_, bloom_[2], blurred_[2];
+    GLuint filterProgram_ = 0, compositeProgram_ = 0, fullscreenVao_ = 0;
+    GLint worldUniform_ = -1;
+    struct FilterUniforms { GLint source=-1, mode=-1, direction=-1, threshold=-1; } filter_;
+    struct CompositeUniforms {
+        GLint scene=-1, bloom=-1, blurred=-1, exposure=-1;
+        GLint bloomStrength=-1, vignetteStrength=-1, edgeBlurStrength=-1;
+    } composite_;
+    PostProcessSettings effects_;
+    bool postReady_ = false, inInterface_ = false, hdrFrame_ = false;
+    void Flush();
+    void WindowViewport();
+    void InitializePostProcessing();
+    void ReleasePostProcessing();
+    bool CreateTarget(Target& target, int width, int height);
+    void Filter(GLuint source, Target& destination, int mode, float dx, float dy);
+    void Blur(GLuint source, Target (&targets)[2], bool extractHighlights);
+    void Composite();
 };

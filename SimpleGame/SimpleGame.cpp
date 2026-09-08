@@ -57,6 +57,15 @@ void Special(int key,int,int) {
     if(!game || game->IsDeathPrompt()) return;
     if(key==GLUT_KEY_F3) game->Action('g');
     if(key==GLUT_KEY_F5) game->Action('p');
+    if(!renderer) return;
+    auto& effects=renderer->Effects();
+    if(key==GLUT_KEY_F6) effects.enabled=!effects.enabled;
+    if(key==GLUT_KEY_F7) effects.bloom=!effects.bloom;
+    if(key==GLUT_KEY_F8) effects.vignette=!effects.vignette;
+    if(key==GLUT_KEY_F9) effects.edgeBlur=!effects.edgeBlur;
+    if(key==GLUT_KEY_PAGE_UP) effects.exposure=std::min(3.f,effects.exposure+.1f);
+    if(key==GLUT_KEY_PAGE_DOWN) effects.exposure=std::max(.25f,effects.exposure-.1f);
+    if(key==GLUT_KEY_HOME) effects=Renderer::PostProcessSettings{};
 }
 }
 
@@ -86,6 +95,8 @@ int main(int argc,char** argv) {
     game.reset(new Game());
     std::cout << "WASD/arrows: move | Shift: run | E: interact | K, Enter: succession demo\n"
               << "F3: chunk overlay | F5: save | Esc: save and exit\n";
+    std::cout << "F6: post FX | F7: bloom | F8: vignette | F9: edge blur\n"
+              << "PageUp/PageDown: exposure | Home: reset effects\n";
     glutIgnoreKeyRepeat(1);
     glutDisplayFunc(Display); glutReshapeFunc(Resize);
     glutKeyboardFunc(Key); glutSpecialFunc(Special); glutCloseFunc(Close);

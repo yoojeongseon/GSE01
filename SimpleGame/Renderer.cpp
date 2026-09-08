@@ -45,6 +45,29 @@ GLuint Shader(GLenum type, const std::string& source) {
     }
     return shader;
 }
+GLuint Program(const wchar_t* vertexFile, const wchar_t* fragmentFile) {
+    GLuint vs=Shader(GL_VERTEX_SHADER,ReadShader(vertexFile));
+    GLuint fs=Shader(GL_FRAGMENT_SHADER,ReadShader(fragmentFile));
+    GLuint program=0;
+    if(vs && fs) {
+        program=glCreateProgram();
+        if(program) {
+            glAttachShader(program,vs); glAttachShader(program,fs); glLinkProgram(program);
+            GLint ok=GL_FALSE;
+            glGetProgramiv(program,GL_LINK_STATUS,&ok);
+            if(!ok) {
+                char log[4096]={};
+                glGetProgramInfoLog(program,sizeof(log),nullptr,log);
+                std::wcerr << L"Program link failed: " << fragmentFile << L'\n';
+                std::cerr << log << '\n';
+                glDeleteProgram(program); program=0;
+            }
+        }
+    }
+    if(vs) glDeleteShader(vs);
+    if(fs) glDeleteShader(fs);
+    return program;
+}
 }
 
 // Rasterize installed Windows Unicode glyphs once, then reuse coverage runs in
@@ -151,8 +174,11 @@ Renderer::Renderer(int width, int height) {
                           reinterpret_cast<void*>(offsetof(Vertex, r)));
     glBindVertexArray(0);
     vertices_.reserve(200000);
+    worldUniform_=glGetUniformLocation(program_,"u_World");
+    InitializePostProcessing();
 }
 Renderer::~Renderer() {
+    ReleasePostProcessing();
     if (buffer_) glDeleteBuffers(1, &buffer_);
     if (vao_) glDeleteVertexArrays(1, &vao_);
     if (program_) glDeleteProgram(program_);
@@ -160,27 +186,158 @@ Renderer::~Renderer() {
 void Renderer::Resize(int w, int h) { width_ = std::max(w, 1); height_ = std::max(h, 1); }
 void Renderer::Begin() {
     vertices_.clear();
+    inInterface_=false;
+    hdrFrame_=postReady_ && effects_.enabled;
     glDisable(GL_SCISSOR_TEST);
+    // Composite shader writes display-encoded RGB; prevent a second conversion.
+    glDisable(GL_FRAMEBUFFER_SRGB);
+    glBindFramebuffer(GL_FRAMEBUFFER,0);
+    glViewport(0,0,width_,height_);
     glClearColor(.025f, .035f, .045f, 1.f);
     glClear(GL_COLOR_BUFFER_BIT);
-    float fit = std::min(width_ / 1280.f, height_ / 800.f);
-    int w = std::max(1, static_cast<int>(1280 * fit));
-    int h = std::max(1, static_cast<int>(800 * fit));
-    glViewport((width_-w)/2, (height_-h)/2, w, h);
+    if(hdrFrame_) {
+        glBindFramebuffer(GL_FRAMEBUFFER,scene_.framebuffer);
+        glViewport(0,0,scene_.width,scene_.height);
+        glClearColor(0,0,0,1);
+        glClear(GL_COLOR_BUFFER_BIT);
+    } else WindowViewport();
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }
+void Renderer::WindowViewport() {
+    float fit = std::min(width_ / 1280.f, height_ / 800.f);
+    int w = std::max(1, static_cast<int>(1280 * fit));
+    int h = std::max(1, static_cast<int>(800 * fit));
+    glViewport((width_-w)/2, (height_-h)/2, w, h);
+}
 void Renderer::End() {
+    if(!inInterface_) BeginInterface();
+    Flush();
+}
+void Renderer::BeginInterface() {
+    if(inInterface_) return;
+    Flush();
+    if(hdrFrame_) Composite();
+    inInterface_=true;
+}
+void Renderer::Flush() {
     if (!IsInitialized() || vertices_.empty()) return;
     glUseProgram(program_);
+    glUniform1i(worldUniform_,hdrFrame_ && !inInterface_ ? 1:0);
     glBindVertexArray(vao_);
     glBindBuffer(GL_ARRAY_BUFFER, buffer_);
     glBufferData(GL_ARRAY_BUFFER, vertices_.size()*sizeof(Vertex), vertices_.data(), GL_STREAM_DRAW);
     glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices_.size()));
     glBindVertexArray(0);
     glUseProgram(0);
+    vertices_.clear();
+}
+
+bool Renderer::CreateTarget(Target& target,int width,int height) {
+    target.width=width; target.height=height;
+    glGenTextures(1,&target.texture);
+    glBindTexture(GL_TEXTURE_2D,target.texture);
+    glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA16F,width,height,0,GL_RGBA,GL_FLOAT,nullptr);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+    glGenFramebuffers(1,&target.framebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER,target.framebuffer);
+    glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,target.texture,0);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    bool ok=target.texture && target.framebuffer &&
+        glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE;
+    glBindFramebuffer(GL_FRAMEBUFFER,0);
+    glBindTexture(GL_TEXTURE_2D,0);
+    return ok;
+}
+void Renderer::InitializePostProcessing() {
+    filterProgram_=Program(L"Fullscreen.vs",L"Filter.fs");
+    compositeProgram_=Program(L"Fullscreen.vs",L"PostProcess.fs");
+    glGenVertexArrays(1,&fullscreenVao_);
+    // Fixed logical resolution keeps blur radius and VRAM use stable on resize.
+    bool ok=filterProgram_ && compositeProgram_ && fullscreenVao_;
+    if(ok) ok=CreateTarget(scene_,1280,800);
+    for(int i=0;i<2 && ok;++i)
+        ok=CreateTarget(bloom_[i],640,400) && CreateTarget(blurred_[i],640,400);
+    if(!ok) {
+        std::cerr << "HDR post-processing unavailable. Falling back to direct rendering.\n";
+        ReleasePostProcessing(); return;
+    }
+    filter_.source=glGetUniformLocation(filterProgram_,"u_Source");
+    filter_.mode=glGetUniformLocation(filterProgram_,"u_Mode");
+    filter_.direction=glGetUniformLocation(filterProgram_,"u_Direction");
+    filter_.threshold=glGetUniformLocation(filterProgram_,"u_Threshold");
+    composite_.scene=glGetUniformLocation(compositeProgram_,"u_Scene");
+    composite_.bloom=glGetUniformLocation(compositeProgram_,"u_Bloom");
+    composite_.blurred=glGetUniformLocation(compositeProgram_,"u_Blurred");
+    composite_.exposure=glGetUniformLocation(compositeProgram_,"u_Exposure");
+    composite_.bloomStrength=glGetUniformLocation(compositeProgram_,"u_BloomStrength");
+    composite_.vignetteStrength=glGetUniformLocation(compositeProgram_,"u_VignetteStrength");
+    composite_.edgeBlurStrength=glGetUniformLocation(compositeProgram_,"u_EdgeBlurStrength");
+    postReady_=true;
+}
+void Renderer::ReleasePostProcessing() {
+    glBindFramebuffer(GL_FRAMEBUFFER,0);
+    for(Target* target:{&scene_,&bloom_[0],&bloom_[1],&blurred_[0],&blurred_[1]}) {
+        if(target->framebuffer) glDeleteFramebuffers(1,&target->framebuffer);
+        if(target->texture) glDeleteTextures(1,&target->texture);
+        *target=Target{};
+    }
+    if(filterProgram_) glDeleteProgram(filterProgram_);
+    if(compositeProgram_) glDeleteProgram(compositeProgram_);
+    if(fullscreenVao_) glDeleteVertexArrays(1,&fullscreenVao_);
+    filterProgram_=compositeProgram_=fullscreenVao_=0;
+    postReady_=false;
+}
+void Renderer::Filter(GLuint source,Target& destination,int mode,float dx,float dy) {
+    // Source is always distinct from the attached destination texture.
+    glBindFramebuffer(GL_FRAMEBUFFER,destination.framebuffer);
+    glViewport(0,0,destination.width,destination.height);
+    glUseProgram(filterProgram_);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D,source);
+    glUniform1i(filter_.source,0);
+    glUniform1i(filter_.mode,mode);
+    glUniform2f(filter_.direction,dx,dy);
+    glUniform1f(filter_.threshold,std::max(.01f,effects_.bloomThreshold));
+    glDrawArrays(GL_TRIANGLES,0,3);
+}
+void Renderer::Blur(GLuint source,Target (&targets)[2],bool extractHighlights) {
+    Filter(source,targets[0],extractHighlights?0:2,0,0);
+    // More, closer-spaced bloom passes soften small emitters without a drawn halo.
+    // Keep the independent peripheral scene-blur settings unchanged.
+    float radius=1.5f;
+    int iterations=extractHighlights?4:2;
+    for(int pass=0;pass<iterations;++pass) {
+        Filter(targets[0].texture,targets[1],1,radius,0);
+        Filter(targets[1].texture,targets[0],1,0,radius);
+    }
+}
+void Renderer::Composite() {
+    glDisable(GL_BLEND);
+    glBindVertexArray(fullscreenVao_);
+    if(effects_.bloom) Blur(scene_.texture,bloom_,true);
+    if(effects_.edgeBlur) Blur(scene_.texture,blurred_,false);
+    glBindFramebuffer(GL_FRAMEBUFFER,0);
+    WindowViewport();
+    glUseProgram(compositeProgram_);
+    glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D,scene_.texture);
+    glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D,effects_.bloom?bloom_[0].texture:scene_.texture);
+    glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D,effects_.edgeBlur?blurred_[0].texture:scene_.texture);
+    glUniform1i(composite_.scene,0); glUniform1i(composite_.bloom,1); glUniform1i(composite_.blurred,2);
+    glUniform1f(composite_.exposure,std::clamp(effects_.exposure,.25f,3.f));
+    glUniform1f(composite_.bloomStrength,effects_.bloom?std::clamp(effects_.bloomStrength,0.f,2.f):0.f);
+    glUniform1f(composite_.vignetteStrength,effects_.vignette?std::clamp(effects_.vignetteStrength,0.f,1.f):0.f);
+    glUniform1f(composite_.edgeBlurStrength,effects_.edgeBlur?std::clamp(effects_.edgeBlurStrength,0.f,1.f):0.f);
+    glDrawArrays(GL_TRIANGLES,0,3);
+    for(int unit=2;unit>=0;--unit) { glActiveTexture(GL_TEXTURE0+unit); glBindTexture(GL_TEXTURE_2D,0); }
+    glBindVertexArray(0); glUseProgram(0);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
 }
 void Renderer::Triangle(Point a, Point b, Point c, Color col) {
     for (Point p : {a,b,c}) vertices_.push_back({p.x,p.y,col.r,col.g,col.b,col.a});
@@ -224,4 +381,3 @@ void Renderer::Text(float x, float y, const std::string& text, Color col, float 
         x+=glyph.advance*factor;
     }
 }
-

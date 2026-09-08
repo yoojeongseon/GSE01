@@ -182,11 +182,14 @@
   <ItemGroup>
     <None Include="Shaders\SolidRect.fs" />
     <None Include="Shaders\SolidRect.vs" />
+    <None Include="Shaders\Fullscreen.vs" />
+    <None Include="Shaders\Filter.fs" />
+    <None Include="Shaders\PostProcess.fs" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Target Name="CopyPrototypeResources" AfterTargets="Build">
     <ItemGroup>
-      <PrototypeShader Include="$(ProjectDir)Shaders\SolidRect.vs;$(ProjectDir)Shaders\SolidRect.fs" />
+      <PrototypeShader Include="$(ProjectDir)Shaders\*.vs;$(ProjectDir)Shaders\*.fs" />
       <PrototypeRuntime Include="$(ProjectDir)..\Debug\freeglut.dll;$(ProjectDir)..\Debug\glew32.dll" Condition="'$(Platform)'=='Win32'" />
       <PrototypeRuntime Include="$(ProjectDir)..\x64\Debug\freeglut.dll;$(ProjectDir)..\x64\Debug\glew32.dll" Condition="'$(Platform)'=='x64'" />
     </ItemGroup>
@@ -197,4 +200,3 @@
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
 </Project>
-

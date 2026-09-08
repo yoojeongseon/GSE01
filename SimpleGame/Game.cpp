@@ -180,8 +180,7 @@ void Game::Ground(Renderer& r) {
             r.Line(c,d,1,{.45f,.7f,.65f,.5f}); r.Line(d,a,1,{.45f,.7f,.65f,.5f});
         }
     }
-    Point fire=Project({0,0});
-    for(int i=7;i>0;--i) r.Ellipse(fire.x,fire.y,28.f+i*15,14.f+i*7,{.92f,.47f,.15f,.025f});
+    // Light halos come exclusively from the post-process bloom bright pass.
 }
 
 void Game::DrawObject(Renderer& r,const Object& o) {
@@ -217,7 +216,7 @@ void Game::DrawObject(Renderer& r,const Object& o) {
             r.Line({x,y-128+61*t},{x+69,y-90+55*t},2,{.16f,.19f,.20f,fade});
         }
         r.Rect(x-30,y-39,16,29,{.105f,.115f,.115f,fade});
-        r.Rect(x+20,y-50,15,20,{.94f,.62f,.27f,fade});
+        r.Rect(x+20,y-50,15,20,{3.2f,1.65f,.42f,fade});
         r.Line({x+27,y-50},{x+27,y-30},2,Ink);
         r.Line({x+20,y-40},{x+35,y-40},2,Ink);
         Box(r,{x+34,y-104},9,5,31,{.32f,.34f,.32f,fade});
@@ -237,17 +236,15 @@ void Game::DrawObject(Renderer& r,const Object& o) {
         break;
     case Kind::Shrine: {
         bool found=discoveries_.count(Tile(o.p))!=0;
-        for(int i=4;i>0;--i) r.Ellipse(x,y-15,i*12.f,i*8.f,{.38f,.72f,.70f,.025f});
         Box(r,{x,y},18,10,8,{.33f,.40f,.39f});
         Box(r,{x,y-8},8,5,35,{.44f,.52f,.49f});
-        Diamond(r,{x,y-36},4,7,found?Gold:Color(.49f,.86f,.83f));
+        Diamond(r,{x,y-36},4,7,found?Gold:Color(1.2f,2.f,1.9f));
         if(found) {
             for(int i=0;i<5;++i) {
                 r.Rect(x-18+i*8,y+3+(i%2)*4,2,5,{.35f,.43f,.28f});
                 r.Ellipse(x-17+i*8,y+3+(i%2)*4,3,2,{.84f,.72f,.48f});
             }
         }
-        if(Distance(player_,o.p)<1.7) r.Text(x-33,y-72,found?"기억된 장소":"E  살펴보기",Paper,1.5f);
         break;
     }
     case Kind::Fire: {
@@ -258,12 +255,12 @@ void Game::DrawObject(Renderer& r,const Object& o) {
         r.Line({x-13,y-2},{x+11,y+4},5,{.22f,.14f,.09f});
         r.Line({x+12,y-2},{x-9,y+4},5,{.28f,.17f,.10f});
         float flicker=std::sin(time_*8)*3;
-        r.Triangle({x-12,y},{x-4,y-31-flicker},{x+10,y},{.90f,.35f,.10f});
-        r.Triangle({x-5,y},{x+4,y-22+flicker},{x+9,y},{1.f,.69f,.22f});
-        r.Triangle({x-4,y},{x,y-14},{x+5,y},{1.f,.91f,.58f});
+        r.Triangle({x-12,y},{x-4,y-31-flicker},{x+10,y},{4.f,1.15f,.2f});
+        r.Triangle({x-5,y},{x+4,y-22+flicker},{x+9,y},{5.f,2.2f,.48f});
+        r.Triangle({x-4,y},{x,y-14},{x+5,y},{7.f,4.2f,1.7f});
         for(int i=0;i<6;++i) {
             float t=std::fmod(time_*.4f+i*.17f,1.f);
-            r.Rect(x+std::sin(i*4.f+t*6)*9,y-12-t*53,2,2,{1.f,.7f,.3f,1-t});
+            r.Rect(x+std::sin(i*4.f+t*6)*9,y-12-t*53,2,2,{3.5f,1.5f,.3f,1-t});
         }
         break;
     }
@@ -281,12 +278,9 @@ void Game::DrawObject(Renderer& r,const Object& o) {
         r.Rect(x-4,y-39,8,3,Ink);
         r.Line({x+13,y-25},{x+17,y+1},2,{.48f,.37f,.23f});
         if(hero) {
-            r.Rect(x+11,y-21,6,8,Gold);
-            r.Ellipse(x+14,y-17,16,18,{1.f,.68f,.31f,.045f});
+            r.Rect(x+11,y-21,6,8,{2.8f,1.5f,.4f});
             Diamond(r,{x,y-59},4,3,Gold);
         }
-        if(Distance(player_,o.p)<1.8 && !hero)
-            r.Text(x-27,y-61,keeper?"E  불지기":"E  이어진 삶",Paper,1.5f);
         break;
     }
     }
@@ -306,16 +300,19 @@ void Game::Draw(Renderer& r) {
         return a.p.x+a.p.y < b.p.x+b.p.y;
     });
     for(const auto& o:objects) DrawObject(r,o);
-    // Soft edge darkness and drifting ground mist, before the interface.
-    for(int i=0;i<12;++i) {
-        float edge=14.f*i;
-        r.Rect(edge,0,14,800,{.02f,.04f,.05f,.12f*(1-i/12.f)});
-        r.Rect(1266-edge,0,14,800,{.02f,.04f,.05f,.12f*(1-i/12.f)});
-        r.Rect(0,i*9.f,1280,9,{.03f,.05f,.06f,.14f*(1-i/12.f)});
-    }
+    // Ground mist belongs to the HDR scene. Edge effects are now screen-space passes.
     for(int i=0;i<5;++i) {
         float x=std::fmod(time_*5+i*307.f,1700.f)-200;
         r.Ellipse(x,540+i*31.f,210,17,{.52f,.62f,.60f,.018f});
+    }
+    r.BeginInterface();
+    // World-anchored prompts are UI as well: keep Hangul sharp at the screen edges.
+    for(const auto& o:objects) {
+        Point p=Project(o.p);
+        if(o.kind==Kind::Shrine && Distance(player_,o.p)<1.7)
+            r.Text(p.x-33,p.y-72,discoveries_.count(Tile(o.p))?"기억된 장소":"E  살펴보기",Paper,1.5f);
+        if((o.kind==Kind::Villager || o.kind==Kind::Heir) && Distance(player_,o.p)<1.8)
+            r.Text(p.x-27,p.y-61,o.kind==Kind::Villager?"E  불지기":"E  이어진 삶",Paper,1.5f);
     }
     Interface(r);
     r.End();
@@ -359,7 +356,7 @@ void Game::Interface(Renderer& r) {
     r.Rect(0,731,1280,69,{.035f,.055f,.065f,.96f});
     r.Rect(30,731,1220,1,{.67f,.56f,.34f,.5f});
     r.Text(32,748,"WASD / 방향키  이동     Shift  달리기     E  대화·조사     K  삶의 전승",Paper,1.5f);
-    r.Text(32,776,"F3  청크 표시     F5  저장     Esc  저장 후 종료",{.49f,.59f,.57f},1.3f);
+    r.Text(32,776,"F3  정보     F5  저장     F6  후처리 비교     Esc  저장 후 종료",{.49f,.59f,.57f},1.3f);
     if(saveBlocked_) r.Text(851,776,"저장 불가",{.94f,.49f,.34f},1.3f);
     else r.Text(851,776,"10초마다 자동 저장",Gold,1.3f);
     if(debug_) {
@@ -367,6 +364,17 @@ void Game::Interface(Renderer& r) {
         r.Rect(30,218,450,50,{0,0,0,.7f});
         r.Text(42,230,"청크 "+std::to_string(c.first)+" : "+std::to_string(c.second),Paper,1.5f);
         r.Text(42,250,"불러온 청크 "+std::to_string(chunks_.size())+" / 시드 20260908",Gold,1.5f);
+        const auto& effects=r.Effects();
+        r.Rect(30,278,480,106,{0,0,0,.8f});
+        std::ostringstream exposure;
+        exposure << std::fixed << std::setprecision(2) << effects.exposure;
+        r.Text(42,286,!r.PostProcessingAvailable()?"후처리 사용 불가: 콘솔 로그 확인":
+            effects.enabled?"F6  HDR 후처리 켜짐":"F6  후처리 꺼짐",Paper,1.4f);
+        r.Text(42,310,std::string("F7 블룸 ")+(effects.bloom?"켜짐":"꺼짐")+
+            " / F8 비넷 "+(effects.vignette?"켜짐":"꺼짐"),Paper,1.3f);
+        r.Text(42,334,std::string("F9 가장자리 블러 ")+(effects.edgeBlur?"켜짐":"꺼짐")+
+            " / 노출 "+exposure.str(),Paper,1.3f);
+        r.Text(42,358,"PageUp / PageDown 노출 조절 / Home 초기화",Gold,1.3f);
     }
     if(deathPrompt_) {
         r.Rect(0,0,1280,800,{.01f,.02f,.03f,.78f});
@@ -497,4 +505,3 @@ bool Game::Load() {
     Message("돌아왔군요. 불씨는 아직 꺼지지 않았습니다.\n이어진 삶과 발견의 기록을 불러왔습니다.");
     return true;
 }
-
