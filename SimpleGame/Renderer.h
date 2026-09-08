@@ -1,35 +1,39 @@
 #pragma once
-
 #include <string>
-#include <cstdlib>
-#include <fstream>
-#include <iostream>
+#include <vector>
+#include <memory>
+#include "Dependencies/glew.h"
 
-#include "Dependencies\glew.h"
-
-class Renderer
-{
-public:
-	Renderer(int windowSizeX, int windowSizeY);
-	~Renderer();
-
-	bool IsInitialized();
-	void DrawSolidRect(float x, float y, float z, float size, float r, float g, float b, float a);
-
-private:
-	void Initialize(int windowSizeX, int windowSizeY);
-	bool ReadFile(char* filename, std::string *target);
-	void AddShader(GLuint ShaderProgram, const char* pShaderText, GLenum ShaderType);
-	GLuint CompileShaders(char* filenameVS, char* filenameFS);
-	void CreateVertexBufferObjects();
-	void GetGLPosition(float x, float y, float *newX, float *newY);
-
-	bool m_Initialized = false;
-	
-	unsigned int m_WindowSizeX = 0;
-	unsigned int m_WindowSizeY = 0;
-
-	GLuint m_VBORect = 0;
-	GLuint m_SolidRectShader = 0;
+struct Point { float x, y; };
+struct Color {
+    float r, g, b, a;
+    Color(float red, float green, float blue, float alpha = 1.f)
+        : r(red), g(green), b(blue), a(alpha) {}
 };
 
+// Batched, painter-ordered geometry in a 1280 x 800 logical canvas.
+class Renderer {
+public:
+    Renderer(int width, int height);
+    ~Renderer();
+    Renderer(const Renderer&) = delete;
+    Renderer& operator=(const Renderer&) = delete;
+    bool IsInitialized() const;
+    void Resize(int width, int height);
+    void Begin();
+    void End();
+    void Triangle(Point a, Point b, Point c, Color color);
+    void Quad(Point a, Point b, Point c, Point d, Color color);
+    void Rect(float x, float y, float w, float h, Color color);
+    void Ellipse(float x, float y, float rx, float ry, Color color);
+    void Line(Point a, Point b, float width, Color color);
+    void Text(float x, float y, const std::string& text, Color color, float scale = 2.f);
+
+private:
+    struct FontData;
+    std::unique_ptr<FontData> font_;
+    struct Vertex { float x, y, r, g, b, a; };
+    GLuint program_ = 0, vao_ = 0, buffer_ = 0;
+    int width_ = 1280, height_ = 800;
+    std::vector<Vertex> vertices_;
+};
