@@ -1,2 +1,11 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Project source files use Windows line endings in the working tree.
+*.cpp text eol=crlf
+*.h text eol=crlf
+*.vs text eol=crlf
+*.fs text eol=crlf
+.clang-format text eol=crlf
+.clang-format-ignore text eol=crlf
+CODING_STYLE.txt text eol=crlf
