@@ -1,16 +1,14 @@
 #pragma once
 #include "Renderer.h"
 #include "LevelOne.h"
+#include "WorldActors.h"
 #include <cstdint>
 #include <map>
 #include <set>
 #include <string>
 #include <vector>
 
-struct WorldPoint
-{
-    double x = 0, y = 0;
-};
+using WorldPoint = ActorPosition;
 
 using TileKey = std::pair<std::int64_t, std::int64_t>;
 
@@ -29,25 +27,25 @@ public:
     }
 
 private:
-    enum class Kind
-    {
-        Tree,
-        Rock,
-        House,
-        Ruin,
-        Shrine,
-        Fire,
-        Villager,
-        Heir,
-        Player
-    };
+    friend class MistActor;
+    friend class WorldActor;
+    friend class WorldTileActor;
+    friend class ChunkBoundaryActor;
+    using Kind = WorldKind;
+    using Object = WorldActor;
+    SceneGraph scene_;
+    ActorId playerId_ = 0, villageRoot_ = 0, heirRoot_ = 0;
+    std::map<std::uint64_t, ActorId> heirActors_;
 
-    struct Object
+    WorldPoint& Player()
     {
-        WorldPoint p;
-        Kind kind;
-        std::uint64_t variation;
-    };
+        return scene_.Get<WorldActor>(playerId_).p;
+    }
+
+    const WorldPoint& Player() const
+    {
+        return scene_.Get<WorldActor>(playerId_).p;
+    }
 
     struct Heir
     {
@@ -59,14 +57,13 @@ private:
 
     struct Chunk
     {
-        std::vector<Object> objects;
+        ActorId root = 0;
     };
 
-    WorldPoint player_{1.5, 1.5}, camera_{1.5, 1.5};
+    WorldPoint camera_{1.5, 1.5};
     std::map<TileKey, Chunk> chunks_;
     std::set<TileKey> discoveries_;
     std::vector<Heir> heirs_;
-    std::vector<Object> village_;
     std::wstring savePath_;
     std::uint64_t nextLife_ = 1;
     int kindness_ = 0;
@@ -80,7 +77,6 @@ private:
     void Stream();
     bool Blocked(WorldPoint p) const;
     Point Project(WorldPoint p) const;
-    void Ground(Renderer& r);
     void DrawObject(Renderer& r, const Object& object);
     void Interface(Renderer& r);
     void Interact();

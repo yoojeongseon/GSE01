@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "Game.h"
+#include "WorldGeneration.h"
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -14,20 +15,11 @@
 
 namespace
 {
-    constexpr int ChunkSize = 8;
+    using WorldGeneration::ChunkSize;
+    using WorldGeneration::Hash;
+    using WorldGeneration::Road;
 
     // Generation version 1. Keep this function stable for existing prototype saves.
-    std::uint64_t Hash(std::int64_t x, std::int64_t y)
-    {
-        std::uint64_t v = static_cast<std::uint64_t>(x) * 0x9E3779B185EBCA87ULL;
-        v ^= static_cast<std::uint64_t>(y) * 0xC2B2AE3D27D4EB4FULL;
-        v ^= 20260908ULL;
-        v ^= v >> 30;
-        v *= 0xBF58476D1CE4E5B9ULL;
-        v ^= v >> 27;
-        v *= 0x94D049BB133111EBULL;
-        return v ^ (v >> 31);
-    }
 
     TileKey Tile(WorldPoint p)
     {
@@ -45,31 +37,11 @@ namespace
         return std::hypot(a.x - b.x, a.y - b.y);
     }
 
-    bool Road(std::int64_t x, std::int64_t y)
-    {
-        // Connected roads leave the initial settlement in four directions.
-        return x == 0 || y == 0;
-    }
-
-    Color Tint(Color c, float f)
-    {
-        return {c.r * f, c.g * f, c.b * f, c.a};
-    }
-
     const Color Ink(.055f, .073f, .087f), Gold(.85f, .65f, .35f), Paper(.82f, .84f, .77f);
 
     void Diamond(Renderer& r, Point p, float w, float h, Color c)
     {
         r.Quad({p.x, p.y - h}, {p.x + w, p.y}, {p.x, p.y + h}, {p.x - w, p.y}, c);
-    }
-
-    void Box(Renderer& r, Point p, float w, float d, float h, Color c)
-    {
-        r.Quad(
-            {p.x - w, p.y - d}, {p.x, p.y}, {p.x, p.y - h}, {p.x - w, p.y - d - h}, Tint(c, .72f));
-        r.Quad(
-            {p.x, p.y}, {p.x + w, p.y - d}, {p.x + w, p.y - d - h}, {p.x, p.y - h}, Tint(c, .9f));
-        Diamond(r, {p.x, p.y - d - h}, w, d, c);
     }
 
     bool ValidPoint(WorldPoint p)
@@ -82,14 +54,22 @@ namespace
 
 Game::Game()
 {
-    village_ = {{{-3, -1.5}, Kind::House, 0},
-                {{1.5, -3}, Kind::House, 1},
-                {{4, -.5}, Kind::House, 2},
-                {{-4, 3}, Kind::Ruin, 0},
-                {{5, 4}, Kind::Ruin, 1},
-                {{0, 0}, Kind::Fire, 0},
-                {{-.8, 1.2}, Kind::Villager, 0},
-                {{-2, 4}, Kind::Shrine, 0}};
+    const std::vector<Object> village = {{{-3, -1.5}, Kind::House, 0},
+                                         {{1.5, -3}, Kind::House, 1},
+                                         {{4, -.5}, Kind::House, 2},
+                                         {{-4, 3}, Kind::Ruin, 0},
+                                         {{5, 4}, Kind::Ruin, 1},
+                                         {{0, 0}, Kind::Fire, 0},
+                                         {{-.8, 1.2}, Kind::Villager, 0},
+                                         {{-2, 4}, Kind::Shrine, 0}};
+    villageRoot_ = scene_.Create<Actor>(0);
+    heirRoot_ = scene_.Create<Actor>(0);
+    scene_.Create<MistActor>(0);
+    playerId_ = scene_.Create<WorldActor>(0, WorldPoint{1.5, 1.5}, Kind::Player, 0);
+    for (const auto& object : village)
+    {
+        scene_.Create<WorldActor>(villageRoot_, object);
+    }
     wchar_t executable[32768] = {};
     DWORD count = GetModuleFileNameW(nullptr, executable, 32768);
     if (count && count < 32768)
@@ -114,19 +94,20 @@ Game::Game()
         Message(
             "저장 파일을 읽지 못했습니다. 기존 파일은 보존했습니다.\n프로토타입 안내서의 저장 복구 항목을 확인해 주세요.");
     }
-    camera_ = player_;
+    camera_ = Player();
     Stream();
 }
 
 void Game::Stream()
 {
-    TileKey center = ChunkAt(player_);
+    TileKey center = ChunkAt(Player());
     // Fixed 7 x 7 working set, independent of the number of visited regions.
     for (auto it = chunks_.begin(); it != chunks_.end();)
     {
         if (std::abs(it->first.first - center.first) > 3 ||
             std::abs(it->first.second - center.second) > 3)
         {
+            scene_.Destroy(it->second.root);
             it = chunks_.erase(it);
         }
         else
@@ -144,34 +125,64 @@ void Game::Stream()
                 continue;
             }
             Chunk chunk;
+            chunk.root = scene_.Create<Actor>(0);
+            scene_.Get<Actor>(chunk.root).p = {double(key.first * ChunkSize),
+                                               double(key.second * ChunkSize)};
+            scene_.Create<ChunkBoundaryActor>(chunk.root);
             for (int y = 0; y < ChunkSize; ++y)
             {
                 for (int x = 0; x < ChunkSize; ++x)
                 {
                     std::int64_t tx = key.first * ChunkSize + x, ty = key.second * ChunkSize + y;
+                    scene_.Create<WorldTileActor>(chunk.root, WorldPoint{x + .5, y + .5});
                     if ((std::abs(tx) < 7 && std::abs(ty) < 7) || Road(tx, ty))
                     {
                         continue;
                     }
                     auto hash = Hash(tx, ty);
-                    WorldPoint p = {tx + .5, ty + .5};
+                    WorldPoint p = {x + .5, y + .5};
                     if (hash % 157 == 0)
                     {
-                        chunk.objects.push_back({p, Kind::Shrine, hash});
+                        scene_.Create<WorldActor>(chunk.root, p, Kind::Shrine, hash);
                     }
                     else if (hash % 17 < 3)
                     {
-                        chunk.objects.push_back({p, Kind::Tree, hash});
+                        scene_.Create<WorldActor>(chunk.root, p, Kind::Tree, hash);
                     }
                     else if (hash % 31 == 0)
                     {
-                        chunk.objects.push_back({p, Kind::Rock, hash});
+                        scene_.Create<WorldActor>(chunk.root, p, Kind::Rock, hash);
                     }
                 }
             }
             chunks_.emplace(key, std::move(chunk));
         }
     }
+
+    // Heir records persist in saves; only nearby records have live scene nodes.
+    for (auto it = heirActors_.begin(); it != heirActors_.end();)
+    {
+        const Actor* actor = scene_.Find(it->second);
+        if (!actor || Distance(actor->p, Player()) >= 32)
+        {
+            scene_.Destroy(it->second);
+            it = heirActors_.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+    for (const auto& heir : heirs_)
+    {
+        if (Distance(heir.p, Player()) < 32 && !heirActors_.count(heir.id))
+        {
+            std::uint64_t variation = heir.kindness > 0 ? 1 : heir.distance > 20 ? 2 : 0;
+            heirActors_[heir.id] =
+                scene_.Create<WorldActor>(heirRoot_, heir.p, Kind::Heir, variation);
+        }
+    }
+    scene_.FlushDestroyed();
 }
 
 bool Game::Blocked(WorldPoint p) const
@@ -204,32 +215,15 @@ bool Game::Blocked(WorldPoint p) const
         }
         return Distance(p, o.p) < radius + .18;
     };
-    for (const auto& o : village_)
-    {
-        if (collides(o))
+    bool blocked = false;
+    scene_.Visit<WorldActor>(
+        [&](const WorldActor& actor, WorldPoint world)
         {
-            return true;
-        }
-    }
-    TileKey key = ChunkAt(p);
-    for (int dy = -1; dy <= 1; ++dy)
-    {
-        for (int dx = -1; dx <= 1; ++dx)
-        {
-            auto it = chunks_.find({key.first + dx, key.second + dy});
-            if (it != chunks_.end())
-            {
-                for (const auto& o : it->second.objects)
-                {
-                    if (collides(o))
-                    {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-    return false;
+            Object object = actor;
+            object.p = world;
+            blocked = blocked || collides(object);
+        });
+    return blocked;
 }
 
 void Game::Update(float dt, bool up, bool down, bool left, bool right, bool run)
@@ -249,37 +243,13 @@ void Game::Update(float dt, bool up, bool down, bool left, bool right, bool run)
         }
         return;
     }
-    if (!deathPrompt_)
-    {
-        double sx = double(right) - double(left), sy = double(down) - double(up);
-        double length = std::hypot(sx, sy);
-        if (length > 0)
-        {
-            sx /= length;
-            sy /= length;
-            // Inverse isometric basis: WASD follows screen directions.
-            double dx = (sx + sy) * .70710678118, dy = (sy - sx) * .70710678118;
-            double step = dt * (run ? 4.8 : 2.8);
-            WorldPoint old = player_;
-            WorldPoint next = {player_.x + dx * step, player_.y};
-            if (!Blocked(next))
-            {
-                player_ = next;
-            }
-            next = {player_.x, player_.y + dy * step};
-            if (!Blocked(next))
-            {
-                player_ = next;
-            }
-            double travelled = Distance(old, player_);
-            distance_ += travelled;
-            walk_ += static_cast<float>(travelled) * 5;
-        }
-    }
+    SceneContext context{nullptr, this, up, down, left, right, run};
+    scene_.UpdatePhase(ActorPhase::Movement, dt, context);
+
     // Limit camera lag so the loaded region always covers the visible canvas.
     float follow = 1.f - std::exp(-9.f * dt);
-    camera_.x += (player_.x - camera_.x) * follow;
-    camera_.y += (player_.y - camera_.y) * follow;
+    camera_.x += (Player().x - camera_.x) * follow;
+    camera_.y += (Player().y - camera_.y) * follow;
     Stream();
     if (autosave_ >= 10)
     {
@@ -294,222 +264,6 @@ Point Game::Project(WorldPoint p) const
     return {640.f + static_cast<float>((x - y) * 42), 390.f + static_cast<float>((x + y) * 21)};
 }
 
-void Game::Ground(Renderer& r)
-{
-    r.Rect(0, 0, 1280, 800, {.10f, .15f, .16f});
-    for (const auto& pair : chunks_)
-    {
-        auto cx = pair.first.first * ChunkSize, cy = pair.first.second * ChunkSize;
-        for (int y = 0; y < ChunkSize; ++y)
-        {
-            for (int x = 0; x < ChunkSize; ++x)
-            {
-                auto tx = cx + x, ty = cy + y;
-                Point p = Project({tx + .5, ty + .5});
-                if (p.x < -50 || p.x > 1330 || p.y < -30 || p.y > 830)
-                {
-                    continue;
-                }
-                auto hash = Hash(tx, ty);
-                float variation = float(hash % 12) * .003f;
-                bool clearing = std::hypot(double(tx), double(ty)) < 5;
-                Color ground = clearing
-                                   ? Color(.23f + variation, .245f + variation, .21f + variation)
-                                   : Color(.13f + variation, .20f + variation, .18f + variation);
-                if (Road(tx, ty))
-                {
-                    ground = {.28f + variation, .275f + variation, .24f + variation};
-                }
-                Diamond(r, p, 42.2f, 21.2f, ground);
-                if (Road(tx, ty) || clearing)
-                {
-                    for (int stone = 0; stone < 3; ++stone)
-                    {
-                        float ox = float((hash >> (stone * 8)) % 35) - 17;
-                        float oy = float((hash >> (stone * 8 + 4)) % 13) - 6;
-                        r.Ellipse(p.x + ox, p.y + oy, 3, 1.3f, Tint(ground, .8f));
-                    }
-                }
-                else if (hash % 3 == 0)
-                {
-                    r.Line({p.x - 4, p.y + 2}, {p.x - 6, p.y - 4}, 1, {.25f, .32f, .24f});
-                    r.Line({p.x, p.y + 2}, {p.x + 3, p.y - 3}, 1, {.20f, .29f, .23f});
-                }
-            }
-        }
-        if (debug_)
-        {
-            Point a = Project({double(cx), double(cy)}), b = Project({double(cx + 8), double(cy)});
-            Point c = Project({double(cx + 8), double(cy + 8)}),
-                  d = Project({double(cx), double(cy + 8)});
-            r.Line(a, b, 1, {.45f, .7f, .65f, .5f});
-            r.Line(b, c, 1, {.45f, .7f, .65f, .5f});
-            r.Line(c, d, 1, {.45f, .7f, .65f, .5f});
-            r.Line(d, a, 1, {.45f, .7f, .65f, .5f});
-        }
-    }
-    // Light halos come exclusively from the post-process bloom bright pass.
-}
-
-void Game::DrawObject(Renderer& r, const Object& o)
-{
-    Point p = Project(o.p);
-    if (p.x < -180 || p.x > 1460 || p.y < -50 || p.y > 1080)
-    {
-        return;
-    }
-    float x = p.x, y = p.y;
-    float fade = 1.f;
-    if (o.kind == Kind::Tree || o.kind == Kind::House)
-    {
-        Point hero = Project(player_);
-        if (std::abs(hero.x - x) < 65 && hero.y < y && hero.y > y - 150)
-        {
-            fade = .42f;
-        }
-    }
-    r.Ellipse(x + 7,
-              y + 3,
-              o.kind == Kind::House ? 68.f : 20.f,
-              o.kind == Kind::House ? 25.f : 8.f,
-              {.025f, .04f, .05f, .3f});
-    switch (o.kind)
-    {
-    case Kind::Tree:
-    {
-        float height = 72.f + float(o.variation % 35);
-        r.Rect(x - 4, y - 33, 8, 34, {.18f, .16f, .13f, fade});
-        for (int i = 0; i < 3; ++i)
-        {
-            float top = y - height - i * 17, bottom = y - 15 - i * 25, half = 36.f - i * 6;
-            r.Triangle({x, top},
-                       {x - half, bottom},
-                       {x + half, bottom},
-                       {.07f + i * .013f, .15f + i * .016f, .145f + i * .013f, fade});
-            r.Triangle({x, top},
-                       {x, bottom},
-                       {x + half, bottom},
-                       {.12f + i * .014f, .22f + i * .018f, .195f + i * .015f, fade});
-        }
-        break;
-    }
-    case Kind::Rock:
-        Box(r, {x, y}, 16, 8, 12, {.38f, .42f, .41f});
-        break;
-    case Kind::House:
-    {
-        Box(r, {x, y}, 59, 28, 65, {.39f, .37f, .30f, fade});
-        r.Quad({x - 69, y - 90},
-               {x, y - 128},
-               {x, y - 67},
-               {x - 69, y - 35},
-               {.20f, .23f, .24f, fade});
-        r.Quad({x, y - 128},
-               {x + 69, y - 90},
-               {x + 69, y - 35},
-               {x, y - 67},
-               {.29f, .31f, .30f, fade});
-        for (int i = 1; i < 5; ++i)
-        {
-            float t = i / 5.f;
-            r.Line({x, y - 128 + 61 * t}, {x + 69, y - 90 + 55 * t}, 2, {.16f, .19f, .20f, fade});
-        }
-        r.Rect(x - 30, y - 39, 16, 29, {.105f, .115f, .115f, fade});
-        r.Rect(x + 20, y - 50, 15, 20, {3.2f, 1.65f, .42f, fade});
-        r.Line({x + 27, y - 50}, {x + 27, y - 30}, 2, Ink);
-        r.Line({x + 20, y - 40}, {x + 35, y - 40}, 2, Ink);
-        Box(r, {x + 34, y - 104}, 9, 5, 31, {.32f, .34f, .32f, fade});
-        for (int i = 0; i < 4; ++i)
-        {
-            float t = std::fmod(time_ * .3f + i * .25f, 1.f);
-            r.Ellipse(x + 34 + t * 15,
-                      y - 145 - t * 55,
-                      7 + t * 12,
-                      5 + t * 8,
-                      {.52f, .56f, .54f, (1 - t) * .12f});
-        }
-        break;
-    }
-    case Kind::Ruin:
-        Box(r, {x - 17, y}, 16, 9, 65, {.34f, .40f, .40f});
-        Box(r, {x + 27, y - 5}, 13, 8, 48, {.36f, .41f, .40f});
-        Box(r, {x - 4, y - 60}, 29, 8, 15, {.43f, .47f, .44f});
-        r.Line({x - 21, y - 48}, {x - 13, y - 36}, 2, Ink);
-        r.Line({x - 13, y - 36}, {x - 19, y - 24}, 2, Ink);
-        Box(r, {x + 18, y + 8}, 10, 6, 7, {.29f, .34f, .32f});
-        break;
-    case Kind::Shrine:
-    {
-        bool found = discoveries_.count(Tile(o.p)) != 0;
-        Box(r, {x, y}, 18, 10, 8, {.33f, .40f, .39f});
-        Box(r, {x, y - 8}, 8, 5, 35, {.44f, .52f, .49f});
-        Diamond(r, {x, y - 36}, 4, 7, found ? Gold : Color(1.2f, 2.f, 1.9f));
-        if (found)
-        {
-            for (int i = 0; i < 5; ++i)
-            {
-                r.Rect(x - 18 + i * 8, y + 3 + (i % 2) * 4, 2, 5, {.35f, .43f, .28f});
-                r.Ellipse(x - 17 + i * 8, y + 3 + (i % 2) * 4, 3, 2, {.84f, .72f, .48f});
-            }
-        }
-        break;
-    }
-    case Kind::Fire:
-    {
-        for (int i = 0; i < 8; ++i)
-        {
-            float a = i * 6.2831853f / 8;
-            r.Ellipse(x + std::cos(a) * 19, y + std::sin(a) * 9, 6, 4, {.37f, .38f, .33f});
-        }
-        r.Line({x - 13, y - 2}, {x + 11, y + 4}, 5, {.22f, .14f, .09f});
-        r.Line({x + 12, y - 2}, {x - 9, y + 4}, 5, {.28f, .17f, .10f});
-        float flicker = std::sin(time_ * 8) * 3;
-        r.Triangle({x - 12, y}, {x - 4, y - 31 - flicker}, {x + 10, y}, {4.f, 1.15f, .2f});
-        r.Triangle({x - 5, y}, {x + 4, y - 22 + flicker}, {x + 9, y}, {5.f, 2.2f, .48f});
-        r.Triangle({x - 4, y}, {x, y - 14}, {x + 5, y}, {7.f, 4.2f, 1.7f});
-        for (int i = 0; i < 6; ++i)
-        {
-            float t = std::fmod(time_ * .4f + i * .17f, 1.f);
-            r.Rect(
-                x + std::sin(i * 4.f + t * 6) * 9, y - 12 - t * 53, 2, 2, {3.5f, 1.5f, .3f, 1 - t});
-        }
-        break;
-    }
-    case Kind::Villager:
-    case Kind::Heir:
-    case Kind::Player:
-    {
-        bool hero = o.kind == Kind::Player, keeper = o.kind == Kind::Villager;
-        Color cloak = hero     ? Color(.40f, .55f, .55f)
-                      : keeper ? Color(.56f, .37f, .23f)
-                               : Color(.44f, .43f, .60f);
-        if (o.kind == Kind::Heir && o.variation == 1)
-        {
-            cloak = {.54f, .52f, .32f};
-        }
-        if (o.kind == Kind::Heir && o.variation == 2)
-        {
-            cloak = {.32f, .51f, .47f};
-        }
-        float step = hero ? std::sin(walk_) * 2 : std::sin(time_ * 1.7f) * .5f;
-        r.Rect(x - 7, y - 9, 5, 10 + step, Ink);
-        r.Rect(x + 2, y - 9, 5, 10 - step, Ink);
-        r.Triangle({x, y - 41}, {x - 14, y - 6}, {x + 14, y - 6}, Tint(cloak, .65f));
-        r.Quad({x - 8, y - 33}, {x + 8, y - 33}, {x + 10, y - 8}, {x - 9, y - 8}, cloak);
-        r.Ellipse(x, y - 37, 9, 10, Tint(cloak, .8f));
-        r.Rect(x - 4, y - 38, 8, 8, {.71f, .61f, .47f});
-        r.Rect(x - 4, y - 39, 8, 3, Ink);
-        r.Line({x + 13, y - 25}, {x + 17, y + 1}, 2, {.48f, .37f, .23f});
-        if (hero)
-        {
-            r.Rect(x + 11, y - 21, 6, 8, {2.8f, 1.5f, .4f});
-            Diamond(r, {x, y - 59}, 4, 3, Gold);
-        }
-        break;
-    }
-    }
-}
-
 void Game::Draw(Renderer& r)
 {
     if (levelActive_)
@@ -517,66 +271,38 @@ void Game::Draw(Renderer& r)
         levelOne_.Draw(r);
         return;
     }
+    Stream();
     r.Begin();
-    Ground(r);
-    std::vector<Object> objects = village_;
-    for (const auto& c : chunks_)
-    {
-        for (const auto& o : c.second.objects)
-        {
-            objects.push_back(o);
-        }
-    }
-    for (const auto& h : heirs_)
-    {
-        if (Distance(h.p, player_) < 32)
-        {
-            objects.push_back({h.p,
-                               Kind::Heir,
-                               h.kindness > 0    ? 1ULL
-                               : h.distance > 20 ? 2ULL
-                                                 : 0ULL});
-        }
-    }
-    objects.push_back({player_, Kind::Player, 0});
-    std::stable_sort(objects.begin(),
-                     objects.end(),
-                     [](const Object& a, const Object& b)
-                     {
-                         return a.p.x + a.p.y < b.p.x + b.p.y;
-                     });
-    for (const auto& o : objects)
-    {
-        DrawObject(r, o);
-    }
+    r.Rect(0, 0, 1280, 800, {.10f, .15f, .16f});
+    scene_.Draw(r, SceneContext{nullptr, this});
     // Ground mist belongs to the HDR scene. Edge effects are now screen-space passes.
-    for (int i = 0; i < 5; ++i)
-    {
-        float x = std::fmod(time_ * 5 + i * 307.f, 1700.f) - 200;
-        r.Ellipse(x, 540 + i * 31.f, 210, 17, {.52f, .62f, .60f, .018f});
-    }
+
     r.BeginInterface();
     // World-anchored prompts are UI as well: keep Hangul sharp at the screen edges.
-    for (const auto& o : objects)
-    {
-        Point p = Project(o.p);
-        if (o.kind == Kind::Shrine && Distance(player_, o.p) < 1.7)
+    scene_.Visit<WorldActor>(
+        [&](const WorldActor& actor, WorldPoint world)
         {
-            r.Text(p.x - 33,
-                   p.y - 72,
-                   discoveries_.count(Tile(o.p)) ? "기억된 장소" : "E  살펴보기",
-                   Paper,
-                   1.5f);
-        }
-        if ((o.kind == Kind::Villager || o.kind == Kind::Heir) && Distance(player_, o.p) < 1.8)
-        {
-            r.Text(p.x - 27,
-                   p.y - 61,
-                   o.kind == Kind::Villager ? "E  불지기" : "E  이어진 삶",
-                   Paper,
-                   1.5f);
-        }
-    }
+            Object o = actor;
+            o.p = world;
+
+            Point p = Project(o.p);
+            if (o.kind == Kind::Shrine && Distance(Player(), o.p) < 1.7)
+            {
+                r.Text(p.x - 33,
+                       p.y - 72,
+                       discoveries_.count(Tile(o.p)) ? "기억된 장소" : "E  살펴보기",
+                       Paper,
+                       1.5f);
+            }
+            if ((o.kind == Kind::Villager || o.kind == Kind::Heir) && Distance(Player(), o.p) < 1.8)
+            {
+                r.Text(p.x - 27,
+                       p.y - 61,
+                       o.kind == Kind::Villager ? "E  불지기" : "E  이어진 삶",
+                       Paper,
+                       1.5f);
+            }
+        });
     Interface(r);
     r.End();
 }
@@ -587,7 +313,7 @@ void Game::Interface(Renderer& r)
     r.Rect(30, 92, 1220, 1, {.67f, .56f, .34f, .5f});
     r.Text(32, 20, "남겨진 불씨", Paper, 2.4f);
     r.Text(34, 57, "GSE01 / 하나의 삶이 다른 삶을 남긴다", Gold, 1.5f);
-    std::string region = Distance(player_, {0, 0}) < 8 ? "불씨 쉼터" : "적막의 숲";
+    std::string region = Distance(Player(), {0, 0}) < 8 ? "불씨 쉼터" : "적막의 숲";
     r.Text(855, 24, region, Paper, 2);
     r.Text(855,
            52,
@@ -610,8 +336,8 @@ void Game::Interface(Renderer& r)
     r.Line({1180, 152}, {1180, 238}, 1, {.25f, .32f, .31f});
     auto marker = [&](WorldPoint p, Color color, float size)
     {
-        float x = 1180 + static_cast<float>((p.x - player_.x) * 4);
-        float y = 192 + static_cast<float>((p.y - player_.y) * 4);
+        float x = 1180 + static_cast<float>((p.x - Player().x) * 4);
+        float y = 192 + static_cast<float>((p.y - Player().y) * 4);
         if (x > 1118 && x < 1242 && y > 151 && y < 245)
         {
             Diamond(r, {x, y}, size, size, color);
@@ -620,12 +346,12 @@ void Game::Interface(Renderer& r)
     marker({0, 0}, Gold, 4);
     for (const auto& h : heirs_)
     {
-        if (Distance(h.p, player_) < 22)
+        if (Distance(h.p, Player()) < 22)
         {
             marker(h.p, {.63f, .56f, .79f}, 3);
         }
     }
-    marker(player_, Paper, 3);
+    marker(Player(), Paper, 3);
     r.Text(1116, 270, "불씨 / 나 / 전승", {.59f, .66f, .62f}, 1.2f);
 
     if (messageTime_ > 0)
@@ -656,7 +382,7 @@ void Game::Interface(Renderer& r)
     }
     if (debug_)
     {
-        TileKey c = ChunkAt(player_);
+        TileKey c = ChunkAt(Player());
         r.Rect(30, 218, 450, 50, {0, 0, 0, .7f});
         r.Text(42,
                230,
@@ -721,7 +447,7 @@ void Game::Interact()
     double nearestDistance = 1.7;
     for (const auto& h : heirs_)
     {
-        double d = Distance(player_, h.p);
+        double d = Distance(Player(), h.p);
         if (d < nearestDistance)
         {
             nearest = &h;
@@ -740,7 +466,7 @@ void Game::Interact()
                  : "고요한 마음\n이상하죠. 처음 온 곳인데... 오래 머물렀던 집 같아요."));
         return;
     }
-    if (Distance(player_, {-.8, 1.2}) < 1.9)
+    if (Distance(Player(), {-.8, 1.2}) < 1.9)
     {
         bool firstKindness = kindness_ == 0;
         kindness_ = 1;
@@ -764,7 +490,7 @@ void Game::Interact()
     }
     auto examine = [&](const Object& o)
     {
-        if (o.kind != Kind::Shrine || Distance(player_, o.p) > 1.7)
+        if (o.kind != Kind::Shrine || Distance(Player(), o.p) > 1.7)
         {
             return false;
         }
@@ -780,22 +506,20 @@ void Game::Interact()
         }
         return true;
     };
-    for (const auto& o : village_)
-    {
-        if (examine(o))
+    bool examined = false;
+    scene_.Visit<WorldActor>(
+        [&](const WorldActor& actor, WorldPoint world)
         {
-            return;
-        }
-    }
-    for (const auto& c : chunks_)
-    {
-        for (const auto& o : c.second.objects)
-        {
-            if (examine(o))
+            Object object = actor;
+            object.p = world;
+            if (!examined)
             {
-                return;
+                examined = examine(object);
             }
-        }
+        });
+    if (examined)
+    {
+        return;
     }
     Message(
         "조금 더 가까이 다가가 보세요.\n불지기나 이어진 삶, 희미하게 빛나는 기념비와 이야기를 나눌 수 있습니다.");
@@ -822,7 +546,7 @@ void Game::Action(unsigned char key)
                     "삶을 전승하려면 먼저 저장할 수 있어야 합니다.\n기존 기록은 그대로 보존되어 있습니다.");
                 return;
             }
-            WorldPoint oldPlayer = player_;
+            WorldPoint oldPlayer = Player();
             int oldKindness = kindness_;
             double oldDistance = distance_;
             bool oldLevelActive = levelActive_;
@@ -832,9 +556,9 @@ void Game::Action(unsigned char key)
                 levelActive_ = false;
                 levelOne_.ReturnToEntrance();
             }
-            heirs_.push_back({nextLife_, player_, kindness_, distance_});
+            heirs_.push_back({nextLife_, Player(), kindness_, distance_});
             ++nextLife_;
-            player_ = {1.5, 1.5};
+            Player() = {1.5, 1.5};
             kindness_ = 0;
             distance_ = 0;
             // Commit the entire transition in one atomic replacement; roll back on failure.
@@ -842,7 +566,7 @@ void Game::Action(unsigned char key)
             {
                 --nextLife_;
                 heirs_.pop_back();
-                player_ = oldPlayer;
+                Player() = oldPlayer;
                 kindness_ = oldKindness;
                 distance_ = oldDistance;
                 levelActive_ = oldLevelActive;
@@ -855,7 +579,7 @@ void Game::Action(unsigned char key)
             }
             else
             {
-                camera_ = player_;
+                camera_ = Player();
                 Stream();
                 Message(
                     "당신의 발걸음이 멎은 곳에서 새로운 삶이 눈을 뜹니다.\n그곳으로 돌아가 보세요. 당신의 무언가가 남아 있습니다.");
@@ -880,7 +604,7 @@ void Game::Action(unsigned char key)
                     "귀환하려면 황금색 입구로 돌아가세요. 쓰러졌다면 Enter로 전승하세요.");
             }
         }
-        else if (Distance(player_, {0, 0}) < 8)
+        else if (Distance(Player(), {0, 0}) < 8)
         {
             levelActive_ = true;
             Save();
@@ -934,7 +658,7 @@ bool Game::Save()
     std::wstring temp = savePath_ + L".tmp";
     std::ofstream file(temp.c_str(), std::ios::trunc);
     file << "GSE01_PROTO 2\n"
-         << std::setprecision(17) << player_.x << ' ' << player_.y << ' ' << nextLife_ << ' '
+         << std::setprecision(17) << Player().x << ' ' << Player().y << ' ' << nextLife_ << ' '
          << kindness_ << ' ' << distance_ << ' ' << gift_ << '\n'
          << heirs_.size() << '\n';
     for (const auto& h : heirs_)
@@ -1034,7 +758,7 @@ bool Game::Load()
     {
         return false;
     }
-    player_ = position;
+    Player() = position;
     nextLife_ = life;
     kindness_ = kindness;
     distance_ = travelled;

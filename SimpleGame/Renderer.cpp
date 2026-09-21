@@ -289,6 +289,7 @@ void Renderer::Resize(int w, int h)
 
 void Renderer::Begin()
 {
+    frameDrawCalls_ = 0;
     instances_.clear();
     drawRuns_.clear();
     inInterface_ = false;
@@ -389,6 +390,7 @@ void Renderer::Flush()
                               reinterpret_cast<void*>(base + offsetof(Instance, color)));
         const MeshRange& mesh = meshes_[static_cast<size_t>(run.mesh)];
         glDrawArraysInstanced(GL_TRIANGLES, mesh.first, mesh.count, run.count);
+        ++frameDrawCalls_;
     }
     glBindVertexArray(0);
     glUseProgram(0);
@@ -556,6 +558,7 @@ void Renderer::Filter(GLuint source, Target& destination, int mode, float dx, fl
     glUniform2f(filter_.direction, dx, dy);
     glUniform1f(filter_.threshold, std::max(.01f, effects_.bloomThreshold));
     glDrawArrays(GL_TRIANGLES, 0, 3);
+    ++frameDrawCalls_;
 }
 
 void Renderer::Blur(GLuint source, Target (&targets)[2], bool extractHighlights)
@@ -604,6 +607,7 @@ void Renderer::Composite()
     glUniform1f(composite_.edgeBlurStrength,
                 effects_.edgeBlur ? std::clamp(effects_.edgeBlurStrength, 0.f, 1.f) : 0.f);
     glDrawArrays(GL_TRIANGLES, 0, 3);
+    ++frameDrawCalls_;
     for (int unit = 2; unit >= 0; --unit)
     {
         glActiveTexture(GL_TEXTURE0 + unit);

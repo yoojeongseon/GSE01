@@ -201,4 +201,19 @@
   </Target>
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
+  <ItemGroup>
+    <ClInclude Include="Actor.h" />
+    <ClCompile Include="LevelActorDraw.cpp" />
+    <ClInclude Include="LevelActors.h" />
+    <ClCompile Include="LevelActorUpdate.cpp" />
+    <ClCompile Include="LevelInterface.cpp" />
+    <ClCompile Include="LevelNavigation.cpp" />
+    <ClCompile Include="LevelRules.cpp" />
+    <ClCompile Include="LevelSave.cpp" />
+    <ClCompile Include="SceneGraph.cpp" />
+    <ClInclude Include="SceneGraph.h" />
+    <ClCompile Include="WorldActors.cpp" />
+    <ClInclude Include="WorldActors.h" />
+    <ClInclude Include="WorldGeneration.h" />
+  </ItemGroup>
 </Project>

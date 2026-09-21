@@ -3,6 +3,7 @@
 #include <vector>
 #include <memory>
 #include <array>
+#include <cstdint>
 #include "Dependencies/glew.h"
 
 struct Point
@@ -43,6 +44,12 @@ public:
     void BeginInterface();
     void End();
 
+    // Actual GL draw submissions in the current frame, including UI and post-processing.
+    std::uint64_t FrameDrawCalls() const
+    {
+        return frameDrawCalls_;
+    }
+
     PostProcessSettings& Effects()
     {
         return effects_;
@@ -66,6 +73,7 @@ public:
     void Text(float x, float y, const std::string& text, Color color, float scale = 2.f);
 
 private:
+    std::uint64_t frameDrawCalls_ = 0;
     struct FontData;
     std::unique_ptr<FontData> font_;
 

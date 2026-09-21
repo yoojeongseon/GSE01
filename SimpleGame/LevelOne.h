@@ -1,5 +1,6 @@
 #pragma once
-#include "Renderer.h"
+#include "SceneGraph.h"
+#include "LevelActors.h"
 #include <array>
 #include <istream>
 #include <ostream>
@@ -10,10 +11,7 @@
 class LevelOne
 {
 public:
-    struct Vec
-    {
-        float x = 0, y = 0;
-    };
+    using Vec = ActorPosition;
 
     LevelOne();
     void Update(float dt, bool up, bool down, bool left, bool right, bool run);
@@ -41,37 +39,71 @@ public:
     }
 
 private:
+    friend class PlayerActor;
+    friend class WeaponActor;
+    friend class EnemyActor;
+    friend class ProjectileActor;
+    friend class LootActor;
+    friend class TileActor;
+    friend class EntranceActor;
+    friend class RangeActor;
+    friend class WarningActor;
     static constexpr int Size = 36;
 
-    struct Enemy
-    {
-        Vec p;
-        float hp = 0;
-        int type = 0;
-        float attack = 2, warning = 0;
-        Vec impact;
-    };
-
-    struct Shot
-    {
-        Vec p, velocity;
-        float remaining = 0, damage = 0;
-    };
-
-    struct Drop
-    {
-        Vec p;
-        int type = 0;
-        bool attracted = false;
-    };
-
+    SceneGraph scene_;
+    ActorId terrain_ = 0, characters_ = 0, effects_ = 0, playerId_ = 0;
     std::array<int, Size * Size> walls_{};
     std::array<int, Size * Size> paths_{};
-    std::vector<Enemy> enemies_;
-    std::vector<Shot> shots_;
-    std::vector<Drop> drops_;
+    using Enemy = EnemyActor;
+    using Shot = ProjectileActor;
+    using Drop = LootActor;
+
+    Vec& Player()
+    {
+        return scene_.Get<PlayerActor>(playerId_).p;
+    }
+
+    const Vec& Player() const
+    {
+        return scene_.Get<PlayerActor>(playerId_).p;
+    }
+
+    auto Enemies()
+    {
+        return scene_.Query<Enemy>();
+    }
+
+    auto Enemies() const
+    {
+        return scene_.Query<Enemy>();
+    }
+
+    auto Shots()
+    {
+        return scene_.Query<Shot>();
+    }
+
+    auto Shots() const
+    {
+        return scene_.Query<Shot>();
+    }
+
+    auto Drops()
+    {
+        return scene_.Query<Drop>();
+    }
+
+    auto Drops() const
+    {
+        return scene_.Query<Drop>();
+    }
+
+    void AddEnemy(const Enemy& enemy);
+    void RebuildTerrain();
+    void ResolveDeaths();
+    void DrawInterface(Renderer& r);
     std::mt19937 random_;
-    Vec player_{4.5f, 4.5f}, camera_{4.5f, 4.5f};
+    Vec camera_{4.5f, 4.5f};
     float hp_ = 100, fire_ = 0, spawn_ = 2, immunity_ = 0, pathTime_ = 0, time_ = 0;
     int level_ = 1, xp_ = 0, weapon_ = 0, kills_ = 0, picked_ = 0, healed_ = 0;
     bool bossSpawned_ = false, cleared_ = false;

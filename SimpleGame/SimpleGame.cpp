@@ -12,7 +12,9 @@ This program is distributed without any warranty.
 #include <algorithm>
 #include <chrono>
 #include <iostream>
+#include <iomanip>
 #include <memory>
+#include <sstream>
 
 namespace
 {
@@ -25,8 +27,30 @@ namespace
     {
         if (!closing && renderer && game)
         {
+            // Measure presented frames with real elapsed time, not the clamped update dt.
+            static auto sampleStart = std::chrono::steady_clock::now();
+            static std::uint64_t frames = 0, totalDrawCalls = 0, peakDrawCalls = 0;
             game->Draw(*renderer);
             glutSwapBuffers();
+            const auto drawCalls = renderer->FrameDrawCalls();
+            ++frames;
+            totalDrawCalls += drawCalls;
+            peakDrawCalls = std::max(peakDrawCalls, drawCalls);
+            const auto now = std::chrono::steady_clock::now();
+            const double elapsed = std::chrono::duration<double>(now - sampleStart).count();
+            // Throttle console I/O so logging does not dominate frame time.
+            if (elapsed >= 1.0)
+            {
+                std::ostringstream line;
+                line << std::fixed << std::setprecision(1)
+                     << "[Performance] FPS=" << frames / elapsed
+                     << " | DrawCalls/frame: last=" << drawCalls
+                     << ", avg=" << static_cast<double>(totalDrawCalls) / frames
+                     << ", max=" << peakDrawCalls << '\n';
+                std::cout << line.str();
+                sampleStart = now;
+                frames = totalDrawCalls = peakDrawCalls = 0;
+            }
         }
     }
 
