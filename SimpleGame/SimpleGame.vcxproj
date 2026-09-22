@@ -216,4 +216,12 @@
     <ClInclude Include="WorldActors.h" />
     <ClInclude Include="WorldGeneration.h" />
   </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="PerformanceLog.cpp" />
+    <ClInclude Include="PerformanceLog.h" />
+    <ClCompile Include="PrimitiveMeshCache.cpp" />
+    <ClInclude Include="PrimitiveMeshCache.h" />
+    <ClInclude Include="RenderStatistics.h" />
+    <ClInclude Include="RuntimeFiles.h" />
+  </ItemGroup>
 </Project>

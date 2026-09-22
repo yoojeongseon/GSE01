@@ -72,4 +72,12 @@
     <ClInclude Include="WorldActors.h"><Filter>헤더 파일</Filter></ClInclude>
     <ClInclude Include="WorldGeneration.h"><Filter>헤더 파일</Filter></ClInclude>
   </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="PerformanceLog.cpp"><Filter>소스 파일</Filter></ClCompile>
+    <ClInclude Include="PerformanceLog.h"><Filter>헤더 파일</Filter></ClInclude>
+    <ClCompile Include="PrimitiveMeshCache.cpp"><Filter>소스 파일</Filter></ClCompile>
+    <ClInclude Include="PrimitiveMeshCache.h"><Filter>헤더 파일</Filter></ClInclude>
+    <ClInclude Include="RenderStatistics.h"><Filter>헤더 파일</Filter></ClInclude>
+    <ClInclude Include="RuntimeFiles.h"><Filter>헤더 파일</Filter></ClInclude>
+  </ItemGroup>
 </Project>

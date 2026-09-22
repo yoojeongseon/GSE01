@@ -4,6 +4,7 @@
 #include <memory>
 #include <array>
 #include <cstdint>
+#include "RenderStatistics.h"
 #include "Dependencies/glew.h"
 
 struct Point
@@ -50,6 +51,46 @@ public:
         return frameDrawCalls_;
     }
 
+    const RenderStatistics& Statistics() const
+    {
+        return statistics_;
+    }
+
+    bool BatchingEnabled() const
+    {
+        return batchingEnabled_;
+    }
+
+    void SetBatchingEnabled(bool enabled)
+    {
+        batchingEnabled_ = enabled;
+    }
+
+    const std::string& MeshCacheStatus() const
+    {
+        return meshCacheStatus_;
+    }
+
+    std::uint32_t StartupMeshesGenerated() const
+    {
+        return startupMeshesGenerated_;
+    }
+
+    std::uint32_t StartupMeshesLoaded() const
+    {
+        return startupMeshesLoaded_;
+    }
+
+    int Width() const
+    {
+        return width_;
+    }
+
+    int Height() const
+    {
+        return height_;
+    }
+
     PostProcessSettings& Effects()
     {
         return effects_;
@@ -74,6 +115,15 @@ public:
 
 private:
     std::uint64_t frameDrawCalls_ = 0;
+    RenderStatistics statistics_;
+    bool batchingEnabled_ = true;
+    std::string meshCacheStatus_;
+    std::uint32_t startupMeshesGenerated_ = 0, startupMeshesLoaded_ = 0;
+    GLuint meshTexture_ = 0;
+    GLint meshUniform_ = -1;
+    static constexpr size_t MaxQueuedInstances = 16384;
+    // Long homogeneous spans avoid padding thousands of glyph quads to circle size.
+    static constexpr size_t HomogeneousRunThreshold = 256;
     struct FontData;
     std::unique_ptr<FontData> font_;
 
@@ -94,6 +144,7 @@ private:
     {
         Point a, b, c, d;
         Color color;
+        float mesh = 0;
     };
 
     struct DrawRun
@@ -111,6 +162,7 @@ private:
     std::vector<DrawRun> drawRuns_;
     size_t instanceCapacity_ = 0;
     void InitializeMeshes();
+    void SubmitBatch(size_t first, GLsizei count, GLsizei vertices);
     void QueueMesh(MeshKind mesh, Point a, Point b, Point c, Point d, Color color);
 
     struct Target

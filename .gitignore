@@ -27,3 +27,7 @@
 /Release/Shaders/
 /x64/Debug/Shaders/
 /x64/Release/Shaders/
+
+# Generated renderer mesh cache and session profiling files
+**/Cache/
+**/Logs/

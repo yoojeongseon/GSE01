@@ -1,5 +1,7 @@
 #include "stdafx.h"
 #include "Renderer.h"
+#include "PrimitiveMeshCache.h"
+#include <chrono>
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -236,7 +238,8 @@ struct Renderer::FontData
 
 bool Renderer::IsInitialized() const
 {
-    return program_ && vao_ && meshBuffer_ && instanceBuffer_ && font_ && font_->valid;
+    return program_ && vao_ && meshBuffer_ && meshTexture_ && instanceBuffer_ && font_ &&
+           font_->valid;
 }
 
 Renderer::Renderer(int width, int height)
@@ -254,9 +257,10 @@ Renderer::Renderer(int width, int height)
         return;
     }
     InitializeMeshes();
-    instances_.reserve(32768);
+    instances_.reserve(MaxQueuedInstances);
     drawRuns_.reserve(4096);
     worldUniform_ = glGetUniformLocation(program_, "u_World");
+    meshUniform_ = glGetUniformLocation(program_, "u_MeshAtlas");
     InitializePostProcessing();
 }
 
@@ -266,6 +270,10 @@ Renderer::~Renderer()
     if (instanceBuffer_)
     {
         glDeleteBuffers(1, &instanceBuffer_);
+    }
+    if (meshTexture_)
+    {
+        glDeleteTextures(1, &meshTexture_);
     }
     if (meshBuffer_)
     {
@@ -290,6 +298,7 @@ void Renderer::Resize(int w, int h)
 void Renderer::Begin()
 {
     frameDrawCalls_ = 0;
+    statistics_ = {};
     instances_.clear();
     drawRuns_.clear();
     inInterface_ = false;
@@ -349,49 +358,96 @@ void Renderer::BeginInterface()
     inInterface_ = true;
 }
 
+void Renderer::SubmitBatch(size_t first, GLsizei count, GLsizei vertices)
+{
+    size_t base = first * sizeof(Instance);
+    const size_t offsets[] = {offsetof(Instance, a),
+                              offsetof(Instance, c),
+                              offsetof(Instance, color),
+                              offsetof(Instance, mesh)};
+    for (GLuint attribute = 1; attribute <= 4; ++attribute)
+    {
+        glVertexAttribPointer(attribute,
+                              attribute == 4 ? 1 : 4,
+                              GL_FLOAT,
+                              GL_FALSE,
+                              sizeof(Instance),
+                              reinterpret_cast<void*>(base + offsets[attribute - 1]));
+    }
+    const auto start = std::chrono::steady_clock::now();
+    glDrawArraysInstanced(GL_TRIANGLES, 0, vertices, count);
+    ++frameDrawCalls_;
+    if (inInterface_)
+    {
+        ++statistics_.uiDraws;
+    }
+    else
+    {
+        ++statistics_.worldDraws;
+    }
+    statistics_.submittedVertices += static_cast<std::uint64_t>(vertices) * count;
+    statistics_.submitCpuMs +=
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+}
+
 void Renderer::Flush()
 {
     if (!IsInitialized() || instances_.empty())
     {
         return;
     }
+    ++statistics_.flushes;
     glUseProgram(program_);
     glUniform1i(worldUniform_, hdrFrame_ && !inInterface_ ? 1 : 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_BUFFER, meshTexture_);
+    glUniform1i(meshUniform_, 0);
     glBindVertexArray(vao_);
     glBindBuffer(GL_ARRAY_BUFFER, instanceBuffer_);
     size_t bytes = instances_.size() * sizeof(Instance);
+    const auto uploadStart = std::chrono::steady_clock::now();
     if (bytes > instanceCapacity_)
     {
         instanceCapacity_ = std::max<size_t>(65536, bytes * 2);
         glBufferData(GL_ARRAY_BUFFER, instanceCapacity_, nullptr, GL_STREAM_DRAW);
+        ++statistics_.bufferGrowths;
     }
     glBufferSubData(GL_ARRAY_BUFFER, 0, bytes, instances_.data());
-    // Merge adjacent instances only. Sorting by mesh would break alpha/painter order.
+    statistics_.uploadBytes += bytes;
+    statistics_.uploadCpuMs +=
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - uploadStart)
+            .count();
+
+    size_t first = 0;
+    GLsizei count = 0, vertexCount = 0;
+    auto submitPending = [&]()
+    {
+        if (count)
+        {
+            SubmitBatch(first, count, vertexCount);
+        }
+        count = vertexCount = 0;
+    };
     for (const DrawRun& run : drawRuns_)
     {
-        size_t base = run.first * sizeof(Instance);
-        glVertexAttribPointer(1,
-                              4,
-                              GL_FLOAT,
-                              GL_FALSE,
-                              sizeof(Instance),
-                              reinterpret_cast<void*>(base + offsetof(Instance, a)));
-        glVertexAttribPointer(2,
-                              4,
-                              GL_FLOAT,
-                              GL_FALSE,
-                              sizeof(Instance),
-                              reinterpret_cast<void*>(base + offsetof(Instance, c)));
-        glVertexAttribPointer(3,
-                              4,
-                              GL_FLOAT,
-                              GL_FALSE,
-                              sizeof(Instance),
-                              reinterpret_cast<void*>(base + offsetof(Instance, color)));
-        const MeshRange& mesh = meshes_[static_cast<size_t>(run.mesh)];
-        glDrawArraysInstanced(GL_TRIANGLES, mesh.first, mesh.count, run.count);
-        ++frameDrawCalls_;
+        const GLsizei vertices = meshes_[static_cast<size_t>(run.mesh)].count;
+        if (!batchingEnabled_ || run.count >= HomogeneousRunThreshold)
+        {
+            submitPending();
+            SubmitBatch(run.first, run.count, vertices);
+        }
+        else
+        {
+            if (!count)
+            {
+                first = run.first;
+            }
+            count += run.count;
+            vertexCount = std::max(vertexCount, vertices);
+        }
     }
+    submitPending();
+    glBindTexture(GL_TEXTURE_BUFFER, 0);
     glBindVertexArray(0);
     glUseProgram(0);
     instances_.clear();
@@ -400,47 +456,32 @@ void Renderer::Flush()
 
 void Renderer::InitializeMeshes()
 {
-    std::vector<Point> vertices;
-    auto append = [&](MeshKind kind, const std::vector<Point>& points)
+    // CPU disk data is loaded/generated once; GPU geometry is uploaded once per context.
+    const auto cache = PrimitiveMeshCache::LoadOrCreate();
+    meshCacheStatus_ = cache.status;
+    startupMeshesLoaded_ = cache.loaded;
+    startupMeshesGenerated_ = cache.generated;
+    statistics_.meshGenerations += cache.generated;
+    for (size_t i = 0; i < meshes_.size(); ++i)
     {
-        meshes_[static_cast<size_t>(kind)] = {static_cast<GLint>(vertices.size()),
-                                              static_cast<GLsizei>(points.size())};
-        vertices.insert(vertices.end(), points.begin(), points.end());
-    };
-    append(MeshKind::Triangle, {{0, 0}, {1, 0}, {1, 1}});
-    append(MeshKind::Quad, {{0, 0}, {1, 0}, {1, 1}, {0, 0}, {1, 1}, {0, 1}});
-    std::vector<Point> circle;
-    for (int i = 0; i < 16; ++i)
-    {
-        float a = i * 6.2831853f / 16;
-        float b = (i + 1) * 6.2831853f / 16;
-        circle.push_back({.5f, .5f});
-        circle.push_back({.5f + std::cos(a) * .5f, .5f + std::sin(a) * .5f});
-        circle.push_back({.5f + std::cos(b) * .5f, .5f + std::sin(b) * .5f});
+        meshes_[i] = {static_cast<GLint>(i * PrimitiveMeshCache::Slots),
+                      static_cast<GLsizei>(cache.counts[i])};
     }
-    append(MeshKind::Circle, circle);
     glGenVertexArrays(1, &vao_);
     glGenBuffers(1, &meshBuffer_);
     glGenBuffers(1, &instanceBuffer_);
+    glGenTextures(1, &meshTexture_);
+    glBindBuffer(GL_TEXTURE_BUFFER, meshBuffer_);
+    glBufferData(GL_TEXTURE_BUFFER, sizeof(cache.vertices), cache.vertices.data(), GL_STATIC_DRAW);
+    glBindTexture(GL_TEXTURE_BUFFER, meshTexture_);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RG32F, meshBuffer_);
+    glBindTexture(GL_TEXTURE_BUFFER, 0);
+    glBindBuffer(GL_TEXTURE_BUFFER, 0);
     glBindVertexArray(vao_);
-    glBindBuffer(GL_ARRAY_BUFFER, meshBuffer_);
-    // Immutable geometry upload: no primitive mesh is rebuilt on subsequent frames.
-    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Point), vertices.data(), GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(Point), nullptr);
-    glVertexAttribDivisor(0, 0);
     glBindBuffer(GL_ARRAY_BUFFER, instanceBuffer_);
-    const size_t offsets[] = {
-        offsetof(Instance, a), offsetof(Instance, c), offsetof(Instance, color)};
-    for (GLuint attribute = 1; attribute <= 3; ++attribute)
+    for (GLuint attribute = 1; attribute <= 4; ++attribute)
     {
         glEnableVertexAttribArray(attribute);
-        glVertexAttribPointer(attribute,
-                              4,
-                              GL_FLOAT,
-                              GL_FALSE,
-                              sizeof(Instance),
-                              reinterpret_cast<void*>(offsets[attribute - 1]));
         glVertexAttribDivisor(attribute, 1);
     }
     glBindVertexArray(0);
@@ -449,12 +490,34 @@ void Renderer::InitializeMeshes()
 
 void Renderer::QueueMesh(MeshKind mesh, Point a, Point b, Point c, Point d, Color color)
 {
+    if (instances_.size() >= MaxQueuedInstances)
+    {
+        Flush();
+    }
     if (drawRuns_.empty() || drawRuns_.back().mesh != mesh)
     {
+        if (drawRuns_.size() == drawRuns_.capacity())
+        {
+            ++statistics_.queueGrowths;
+        }
         drawRuns_.push_back({mesh, instances_.size(), 0});
+        ++statistics_.legacyRuns;
     }
     ++drawRuns_.back().count;
-    instances_.push_back({a, b, c, d, color});
+    if (instances_.size() == instances_.capacity())
+    {
+        ++statistics_.queueGrowths;
+    }
+    instances_.push_back({a, b, c, d, color, static_cast<float>(mesh)});
+    if (inInterface_)
+    {
+        ++statistics_.uiInstances;
+    }
+    else
+    {
+        ++statistics_.worldInstances;
+    }
+    statistics_.usefulVertices += meshes_[static_cast<size_t>(mesh)].count;
 }
 
 bool Renderer::CreateTarget(Target& target, int width, int height)
@@ -559,6 +622,7 @@ void Renderer::Filter(GLuint source, Target& destination, int mode, float dx, fl
     glUniform1f(filter_.threshold, std::max(.01f, effects_.bloomThreshold));
     glDrawArrays(GL_TRIANGLES, 0, 3);
     ++frameDrawCalls_;
+    ++statistics_.postDraws;
 }
 
 void Renderer::Blur(GLuint source, Target (&targets)[2], bool extractHighlights)
@@ -608,6 +672,7 @@ void Renderer::Composite()
                 effects_.edgeBlur ? std::clamp(effects_.edgeBlurStrength, 0.f, 1.f) : 0.f);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     ++frameDrawCalls_;
+    ++statistics_.postDraws;
     for (int unit = 2; unit >= 0; --unit)
     {
         glActiveTexture(GL_TEXTURE0 + unit);
@@ -687,6 +752,14 @@ void Renderer::Text(float x, float y, const std::string& text, Color col, float 
         if (character == L'\r')
         {
             continue;
+        }
+        if (font_->cache.find(character) == font_->cache.end())
+        {
+            ++statistics_.glyphMisses;
+        }
+        else
+        {
+            ++statistics_.glyphHits;
         }
         const auto& glyph = font_->Get(character);
         for (const auto& run : glyph.runs)

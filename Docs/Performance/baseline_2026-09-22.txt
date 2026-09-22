@@ -1,0 +1,9 @@
+사용자가 제공한 변경 전 로그. 장면/하드웨어/후처리/빌드 설정은 미기록.
+이 데이터로 CPU 또는 GPU 병목을 확정할 수 없음.
+
+[Performance] FPS=53.3 | DrawCalls/frame: last=731, avg=702.0, max=744
+[Performance] FPS=54.2 | DrawCalls/frame: last=701, avg=715.1, max=749
+[Performance] FPS=53.5 | DrawCalls/frame: last=716, avg=720.7, max=745
+[Performance] FPS=53.4 | DrawCalls/frame: last=703, avg=712.2, max=734
+[Performance] FPS=52.7 | DrawCalls/frame: last=682, avg=679.3, max=703
+[Performance] FPS=53.4 | DrawCalls/frame: last=701, avg=686.2, max=714

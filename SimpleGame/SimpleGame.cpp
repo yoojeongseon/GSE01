@@ -7,6 +7,7 @@ This program is distributed without any warranty.
 #include "stdafx.h"
 #include "Renderer.h"
 #include "Game.h"
+#include "PerformanceLog.h"
 #include "Dependencies/freeglut.h"
 #include <Windows.h>
 #include <algorithm>
@@ -20,37 +21,32 @@ namespace
 {
     std::unique_ptr<Renderer> renderer;
     std::unique_ptr<Game> game;
+    std::unique_ptr<PerformanceLog> performance;
+    double pendingUpdateMs = 0;
+    unsigned pendingUpdates = 0;
     bool closing = false;
     auto previous = std::chrono::steady_clock::now();
 
     void Display()
     {
-        if (!closing && renderer && game)
+        if (!closing && renderer && game && performance)
         {
-            // Measure presented frames with real elapsed time, not the clamped update dt.
-            static auto sampleStart = std::chrono::steady_clock::now();
-            static std::uint64_t frames = 0, totalDrawCalls = 0, peakDrawCalls = 0;
+            auto start = std::chrono::steady_clock::now();
+            performance->BeginFrame();
             game->Draw(*renderer);
+            performance->EndFrame();
+            auto submitted = std::chrono::steady_clock::now();
             glutSwapBuffers();
-            const auto drawCalls = renderer->FrameDrawCalls();
-            ++frames;
-            totalDrawCalls += drawCalls;
-            peakDrawCalls = std::max(peakDrawCalls, drawCalls);
-            const auto now = std::chrono::steady_clock::now();
-            const double elapsed = std::chrono::duration<double>(now - sampleStart).count();
-            // Throttle console I/O so logging does not dominate frame time.
-            if (elapsed >= 1.0)
-            {
-                std::ostringstream line;
-                line << std::fixed << std::setprecision(1)
-                     << "[Performance] FPS=" << frames / elapsed
-                     << " | DrawCalls/frame: last=" << drawCalls
-                     << ", avg=" << static_cast<double>(totalDrawCalls) / frames
-                     << ", max=" << peakDrawCalls << '\n';
-                std::cout << line.str();
-                sampleStart = now;
-                frames = totalDrawCalls = peakDrawCalls = 0;
-            }
+            auto presented = std::chrono::steady_clock::now();
+            performance->Record(
+                *renderer,
+                game->ActiveSceneName(),
+                pendingUpdateMs,
+                pendingUpdates,
+                std::chrono::duration<double, std::milli>(submitted - start).count(),
+                std::chrono::duration<double, std::milli>(presented - submitted).count());
+            pendingUpdateMs = 0;
+            pendingUpdates = 0;
         }
     }
 
@@ -69,6 +65,7 @@ namespace
         {
             std::cerr << "Closing without a new save; previous save retained.\n";
         }
+        performance.reset(); // Delete timing queries while the GL context still exists.
         game.reset();
         // GLUT invokes the close callback while the window context still exists.
         renderer.reset();
@@ -92,12 +89,17 @@ namespace
         DWORD foregroundProcess = 0;
         GetWindowThreadProcessId(GetForegroundWindow(), &foregroundProcess);
         bool focused = foregroundProcess == GetCurrentProcessId();
+        const auto updateStart = std::chrono::steady_clock::now();
         game->Update(dt,
                      focused && (Down('W') || Down(VK_UP)),
                      focused && (Down('S') || Down(VK_DOWN)),
                      focused && (Down('A') || Down(VK_LEFT)),
                      focused && (Down('D') || Down(VK_RIGHT)),
                      focused && Down(VK_SHIFT));
+        pendingUpdateMs += std::chrono::duration<double, std::milli>(
+                               std::chrono::steady_clock::now() - updateStart)
+                               .count();
+        ++pendingUpdates;
         glutPostRedisplay();
         glutTimerFunc(16, Tick, 0);
     }
@@ -136,6 +138,10 @@ namespace
         if (!renderer)
         {
             return;
+        }
+        if (key == GLUT_KEY_F10)
+        {
+            renderer->SetBatchingEnabled(!renderer->BatchingEnabled());
         }
         auto& effects = renderer->Effects();
         if (key == GLUT_KEY_F6)
@@ -204,10 +210,11 @@ int main(int argc, char** argv)
         return 1;
     }
     game.reset(new Game());
+    performance.reset(new PerformanceLog(*renderer));
     std::cout << "WASD/arrows: move | Shift: run | E: interact | K, Enter: succession demo\n"
               << "F3: chunk overlay | F5: save | Esc: save and exit\n";
     std::cout << "F6: post FX | F7: bloom | F8: vignette | F9: edge blur\n"
-              << "PageUp/PageDown: exposure | Home: reset effects\n";
+              << "F10: compare batching | PageUp/PageDown: exposure | Home: reset effects\n";
     glutIgnoreKeyRepeat(1);
     glutDisplayFunc(Display);
     glutReshapeFunc(Resize);

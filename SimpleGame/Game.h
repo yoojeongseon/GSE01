@@ -21,6 +21,11 @@ public:
     void Action(unsigned char key);
     bool Save();
 
+    const char* ActiveSceneName() const
+    {
+        return levelActive_ ? "level_one" : "world";
+    }
+
     bool IsDeathPrompt() const
     {
         return deathPrompt_;
