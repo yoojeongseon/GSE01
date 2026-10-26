@@ -18,6 +18,7 @@ public:
     void Draw(Renderer& renderer);
     void Write(std::ostream& out) const;
     bool Read(std::istream& in);
+    std::size_t LivingMonsterCount() const;
 
     bool Dead() const
     {

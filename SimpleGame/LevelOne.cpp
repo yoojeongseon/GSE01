@@ -25,6 +25,16 @@ LevelOne::LevelOne() : random_(std::random_device{}())
     Paths();
 }
 
+std::size_t LevelOne::LivingMonsterCount() const
+{
+    std::size_t count = 0;
+    for (const auto& enemy : Enemies())
+    {
+        if (enemy.hp > 0) ++count;
+    }
+    return count;
+}
+
 void LevelOne::AddEnemy(const Enemy& enemy)
 {
     ActorId id = scene_.Create<Enemy>(characters_, enemy);

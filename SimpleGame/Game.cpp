@@ -1,6 +1,9 @@
 #include "stdafx.h"
 #include "Game.h"
 #include "WorldGeneration.h"
+#include "RuntimeFiles.h"
+#include <chrono>
+#include <locale>
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -142,7 +145,7 @@ void Game::Stream()
                     auto hash = Hash(tx, ty);
                     WorldPoint p = {x + .5, y + .5};
                     if (hash % 157 == 0)
-                    {
+                    {   
                         scene_.Create<WorldActor>(chunk.root, p, Kind::Shrine, hash);
                     }
                     else if (hash % 17 < 3)
@@ -222,12 +225,13 @@ bool Game::Blocked(WorldPoint p) const
             Object object = actor;
             object.p = world;
             blocked = blocked || collides(object);
-        });
+        }); 
     return blocked;
 }
 
 void Game::Update(float dt, bool up, bool down, bool left, bool right, bool run)
 {
+    ExportMonitoring(dt);
     time_ += dt;
     autosave_ += dt;
     messageTime_ = std::max(0.f, messageTime_ - dt);
@@ -256,6 +260,59 @@ void Game::Update(float dt, bool up, bool down, bool left, bool right, bool run)
         autosave_ = 0;
         Save();
     }
+}
+
+void Game::ExportMonitoring(float dt)
+{
+    monitoringTime_ += dt;
+    if (monitoringTime_ < 1) return;
+    monitoringTime_ = 0;
+    const auto directory = RuntimeDirectory(L"Monitoring");
+    if (directory.empty()) return;
+    // A process session is a distinct world source; IDs are never JSON numbers.
+    static const auto started = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    const std::string id = "gse01-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(started);
+    const auto path = directory + L"\\" + std::wstring(id.begin(), id.end()) + L".json";
+    const auto temporary = path + L".tmp";
+    std::ostringstream json;
+    json.imbue(std::locale::classic());
+    json << "{\"schemaVersion\":1,\"worldId\":\"" << id
+         << "\",\"name\":\"GSE01 local world\",\"sequence\":" << ++monitoringSequence_
+         << ",\"villages\":[{\"id\":\"camp\",\"name\":\"시작 마을\",\"status\":\""
+         << (levelActive_ ? "paused" : "active") << "\",\"monsterCount\":0,\"npcs\":[";
+    bool comma = false;
+    for (const auto actorId : scene_.Children(villageRoot_))
+    {
+        const auto* npc = dynamic_cast<const WorldActor*>(scene_.Find(actorId));
+        if (!npc || npc->kind != Kind::Villager) continue;
+        if (comma) json << ',';
+        comma = true;
+        json << "{\"id\":\"" << actorId << "\",\"name\":\"불지기\",\"status\":\""
+             << (npc->enabled ? "idle" : "disabled") << "\",\"x\":" << npc->p.x
+             << ",\"y\":" << npc->p.y << '}';
+    }
+    json << "]},{\"id\":\"wilderness\",\"name\":\"주변 월드 (로드된 영역)\","
+         << "\"status\":\"" << (levelActive_ ? "paused" : "active")
+         << "\",\"monsterCount\":0,\"npcs\":[";
+    comma = false;
+    for (const auto& entry : heirActors_)
+    {
+        const auto* npc = scene_.Find(entry.second);
+        if (!npc) continue;
+        if (comma) json << ',';
+        comma = true;
+        const auto p = scene_.WorldPosition(entry.second);
+        json << "{\"id\":\"heir-" << entry.first << "\",\"name\":\"이어진 삶\",\"status\":\""
+             << (npc->enabled ? "idle" : "disabled") << "\",\"x\":" << p.x << ",\"y\":" << p.y << '}';
+    }
+    json << "]},{\"id\":\"level-one\",\"name\":\"전투 지역\",\"status\":\""
+         << (levelActive_ ? "active" : "paused") << "\",\"monsterCount\":"
+         << levelOne_.LivingMonsterCount() << ",\"npcs\":[]}]}";
+    std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+    out << json.str();
+    out.close();
+    if (out) MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING);
 }
 
 Point Game::Project(WorldPoint p) const

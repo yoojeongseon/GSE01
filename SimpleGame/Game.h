@@ -80,6 +80,9 @@ private:
     std::string message_ =
         "아직 작은 불씨가 남아 있습니다.\n모닥불 곁의 불지기에게 다가가 E를 눌러 보세요.";
     void Stream();
+    void ExportMonitoring(float dt);
+    float monitoringTime_ = 1;
+    std::uint64_t monitoringSequence_ = 0;
     bool Blocked(WorldPoint p) const;
     Point Project(WorldPoint p) const;
     void DrawObject(Renderer& r, const Object& object);

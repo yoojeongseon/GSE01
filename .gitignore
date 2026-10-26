@@ -31,3 +31,7 @@
 # Generated renderer mesh cache and session profiling files
 **/Cache/
 **/Logs/
+
+# Runtime monitoring snapshots (keep the Monitoring source directory)
+**/Monitoring/gse01-*.json
+**/Monitoring/gse01-*.json.tmp
